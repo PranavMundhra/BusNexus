@@ -1,5 +1,5 @@
 mysql-connector-python
-streamlit
 pandas
-datetime
-folium
+python-dotenv
+bcrypt
+streamlit-folium
