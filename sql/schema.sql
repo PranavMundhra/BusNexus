@@ -1,3 +1,4 @@
+
 -- ================================================================
 -- BusNexus ADBMS — Schema (v5 Fixed)
 -- ================================================================
@@ -71,6 +72,7 @@ CREATE TABLE employees (
     name       TEXT   NOT NULL,
     contact_no TEXT
 );
+alter table employees add column role TEXT check (role IN ('driver','maintenance'));
 
 
 -- ================================================================
