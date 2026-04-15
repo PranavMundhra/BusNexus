@@ -190,6 +190,9 @@ def add_driver(name, contact):
         (emp["emp_id"],)
     )
 
+    st.write("Inserted employee ID:", emp["emp_id"])
+    st.rerun()
+
 # ══════════════════════════════════════════════════════════════
 # SESSION STATE
 # ══════════════════════════════════════════════════════════════
@@ -208,7 +211,7 @@ def badge(text, color="blue"):
     return f'<span class="badge badge-{color}">{text}</span>'
 
 def status_badge(status):
-    cmap = {"confirmed":"green","cancelled":"red","waitlisted":"orange",
+    cmap = {"confirmed":"green","cancelled":"red",
             "scheduled":"blue","completed":"teal","issued":"green","modified":"purple"}
     return badge(status.capitalize(), cmap.get(status.lower(), "gray"))
 
@@ -629,15 +632,6 @@ def page_book_trip():
 
     with right:
         section("🪑 Seat Map")
-        st.markdown("""
-        <div style='display:flex;gap:14px;margin-bottom:10px;font-size:.79rem'>
-            <span><span style='background:#dcfce7;border:2px solid #86efac;
-                border-radius:5px;padding:2px 7px;color:#15803d;font-weight:700'>12</span>
-                Available</span>
-            <span><span style='background:#fee2e2;border:2px solid #fca5a5;
-                border-radius:5px;padding:2px 7px;color:#b91c1c;font-weight:700'>5</span>
-                Booked</span>
-        </div>""", unsafe_allow_html=True)
 
         try:
             seat_map = run_query("SELECT * FROM get_seat_map(%s) ORDER BY seat_no", (trip_id,))
@@ -649,34 +643,103 @@ def page_book_trip():
                 html += f'<div class="seat {cls}">{s["seat_no"]}</div>'
             html += "</div>"
             st.markdown(html, unsafe_allow_html=True)
-            st.markdown("<br>", unsafe_allow_html=True)
 
-            if not avail: st.error("All seats booked."); return
-            sel_seat = st.selectbox("Choose seat", avail,
-                                    format_func=lambda n: f"Seat {n}", key="bt_seat")
+            if not avail:
+                st.error("All seats booked."); return
+
+            sel_seats = st.multiselect(
+                "Choose seats",
+                avail,
+                format_func=lambda n: f"Seat {n}",
+                key="bt_seats"
+            )
+
         except Exception as e:
             st.error(f"Seat map error: {e}"); return
 
+        # Fare
         try:
-            fare_val = int(run_query("SELECT calculate_fare(%s,'AC') fare", (trip["route_id"],))[0]["fare"])
-        except: fare_val = "—"
+            fare_val = int(run_query(
+                "SELECT calculate_fare(%s,'AC') fare",
+                (trip["route_id"],)
+            )[0]["fare"])
+        except:
+            fare_val = 0
+
+        total_fare = fare_val * len(sel_seats) if sel_seats else 0
+
+        # Payment UI
+        section("💳 Payment")
+        pay_mode = st.selectbox(
+            "Choose Payment Method",
+            ["upi", "card", "cash"],
+            key="bt_payment"
+        )
+
+        # Summary
+        seat_text = ", ".join(map(str, sel_seats)) if sel_seats else "None"
 
         st.markdown(f"""
         <div class="success-box" style='margin-top:1rem'>
-            🪑 <b>Seat {sel_seat}</b> &nbsp;·&nbsp; 💰 Estimated <b>₹{fare_val}</b> (AC)<br>
+            🪑 <b>{len(sel_seats)} seat(s): {seat_text}</b><br>
+            💰 <b>₹{fare_val} × {len(sel_seats)} = ₹{total_fare}</b><br>
+            💳 Payment Mode: <b>{pay_mode.upper()}</b><br>
             🛫 {labels[b_idx]} → 🛬 {labels[d_idx]}
         </div>""", unsafe_allow_html=True)
-        st.markdown("<br>", unsafe_allow_html=True)
 
-        if st.button("✅ Confirm Booking", type="primary", use_container_width=True, key="btn_bk_confirm"):
-            try:
-                run_proc("CALL create_booking(%s,%s,%s,%s,%s,%s)",
-                         (st.session_state.user_id, trip_id,
-                          ids[b_idx], ids[d_idx], sel_seat, j_date))
-                st.session_state.toast = ("🎉 Booking confirmed! Ticket generated.", "success")
-                nav_to("bookings")
-            except Exception as e:
-                st.error(f"Booking failed: {e}")
+        if st.button("✅ Confirm Booking", type="primary", use_container_width=True):
+
+            if not sel_seats:
+                st.warning("Please select at least one seat")
+            else:
+                success_count = 0
+                failed = []
+
+                for seat in sel_seats:
+                    try:
+                        # Create booking
+                        booking_row = run_write_returning("""
+                            INSERT INTO bookings (
+                                user_id, trip_id, boarding_stop, dropping_stop,
+                                journey_date, seat_no, booking_status
+                            )
+                            VALUES (%s,%s,%s,%s,%s,%s,'confirmed')
+                            RETURNING booking_id
+                        """, (
+                            st.session_state.user_id,
+                            trip_id,
+                            ids[b_idx],
+                            ids[d_idx],
+                            j_date,
+                            seat
+                        ))
+
+                        booking_id = booking_row["booking_id"]
+
+                        # Insert payment
+                        run_write("""
+                            INSERT INTO payments (booking_id, amount, payment_mode, payment_status)
+                            VALUES (%s,%s,%s,'success')
+                        """, (
+                            booking_id,
+                            fare_val,
+                            pay_mode
+                        ))
+
+                        success_count += 1
+
+                    except Exception as e:
+                        failed.append(f"Seat {seat}")
+
+                if success_count > 0:
+                    st.session_state.toast = (
+                        f"🎉 {success_count} seat(s) booked successfully!",
+                        "success"
+                    )
+                    nav_to("bookings")
+
+                if failed:
+                    st.error(f"Failed for: {', '.join(failed)}")
 
 # ══════════════════════════════════════════════════════════════
 # PASSENGER — MY BOOKINGS
@@ -692,7 +755,7 @@ def page_my_bookings():
     </div>""", unsafe_allow_html=True)
 
     f_status = st.selectbox("Filter by status",
-                            ["All","confirmed","cancelled","waitlisted"],
+                            ["All","confirmed","cancelled"],
                             key="mb_filter", label_visibility="collapsed")
 
     try:
@@ -726,7 +789,7 @@ def page_my_bookings():
 
     for b in rows:
         dep = b["departure_datetime"].strftime("%a, %d %b %Y · %I:%M %p")
-        sc  = {"confirmed":"#22c55e","cancelled":"#ef4444","waitlisted":"#f59e0b"}.get(
+        sc  = {"confirmed":"#22c55e","cancelled":"#ef4444"}.get(
               b["booking_status"],"#94a3b8")
         tkt = (f'&nbsp;·&nbsp; 🎟️ Ticket #{b["ticket_no"]} &nbsp;·&nbsp; ₹{int(b["fare"])}'
                if b["ticket_no"] else "")
@@ -891,7 +954,9 @@ def page_manage_drivers():
     phone = st.text_input("Contact Number")
 
     if st.button("Add Driver"):
-        try:
+        if not name.strip() or not phone.strip():
+            st.warning("Please enter both name and contact number")
+        else:
             add_driver(name, phone)
             st.success("Driver added successfully")
 
@@ -987,7 +1052,7 @@ def page_analytics():
             data = run_query("SELECT booking_status::TEXT status, COUNT(*) n FROM bookings GROUP BY booking_status")
             if data:
                 fig = px.pie(pd.DataFrame(data), values="n", names="status",
-                             color_discrete_map={"confirmed":"#22c55e","cancelled":"#ef4444","waitlisted":"#f59e0b"})
+                             color_discrete_map={"confirmed":"#22c55e","cancelled":"#ef4444"})
                 fig.update_layout(margin=dict(l=0,r=0,t=5,b=0), paper_bgcolor="rgba(0,0,0,0)")
                 fig.update_traces(textposition='inside', textinfo='percent+label')
                 st.plotly_chart(fig, use_container_width=True)
@@ -1360,6 +1425,24 @@ def page_fleet():
                         st.error(f"Stops error: {e}")
 
         divider()
+        with st.expander("➕ Add Stop"):
+            sn = st.text_input("Stop Name", key="stop_name")
+            sl = st.text_input("Location", key="stop_loc")
+
+            if st.button("Add Stop"):
+                if not sn.strip():
+                    st.warning("Stop name required")
+                else:
+                    try:
+                        run_write(
+                            "INSERT INTO stops(stop_name, location) VALUES(%s,%s)",
+                            (sn.strip(), sl.strip())
+                        )
+                        st.success("Stop added successfully")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed: {e}")
+
         with st.expander("➕ Add a New Route"):
             rc1,rc2 = st.columns(2)
             with rc1:
@@ -1379,6 +1462,53 @@ def page_fleet():
                         st.rerun()
                     except Exception as e:
                         st.error(f"Failed: {e}")
+        with st.expander("🔗 Attach Stop to Route"):
+            try:
+                routes_list = run_query("SELECT route_id, source, destination FROM routes")
+                stops_list = run_query("SELECT stop_id, stop_name FROM stops")
+            except Exception as e:
+                st.error(f"Error loading data: {e}")
+                routes_list, stops_list = [], []
+
+            if not routes_list:
+                st.warning("No routes available")
+            elif not stops_list:
+                st.warning("No stops available")
+            else:
+                route_map = {
+                    f"{r['source']} → {r['destination']}": r["route_id"]
+                    for r in routes_list
+                }
+
+                stop_map = {
+                    s["stop_name"]: s["stop_id"]
+                    for s in stops_list
+                }
+
+                sel_route = st.selectbox("Select Route", list(route_map.keys()), key="rs_route")
+                sel_stop = st.selectbox("Select Stop", list(stop_map.keys()), key="rs_stop")
+
+                seq = st.number_input("Stop Order (Sequence)", min_value=1, step=1, key="rs_seq")
+
+                arr_time = st.time_input("Arrival Time", key="rs_arr")
+                dep_time = st.time_input("Departure Time", key="rs_dep")
+
+                if st.button("Attach Stop"):
+                    try:
+                        run_write("""
+                            INSERT INTO route_stops(route_id, stop_id, stop_sequence, arrival_time, departure_time)
+                            VALUES (%s, %s, %s, %s, %s)
+                        """, (
+                            route_map[sel_route],
+                            stop_map[sel_stop],
+                            seq,
+                            arr_time,
+                            dep_time
+                        ))
+                        st.success("Stop attached successfully")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed: {e}")
 
 # ══════════════════════════════════════════════════════════════
 # COORDINATOR — ALL BOOKINGS
@@ -1391,7 +1521,7 @@ def page_all_bookings():
     </div>""", unsafe_allow_html=True)
 
     fa,fb,fc = st.columns(3)
-    with fa: fs  = st.selectbox("Status",["All","confirmed","cancelled","waitlisted"],key="ab_s")
+    with fa: fs  = st.selectbox("Status",["All","confirmed","cancelled"],key="ab_s")
     with fb: fkw = st.text_input("Route keyword", placeholder="Mumbai, Pune…", key="ab_k")
     with fc: fd  = st.date_input("Journey Date", value=None, key="ab_d")
 
@@ -1571,7 +1701,7 @@ COORDINATOR_PAGES = {
     "ticket_registry": page_ticket_registry,
     "users":           page_users,
     "dashboard":       page_analytics,
-    "driver": page_manage_drivers,
+    "drivers": page_manage_drivers,
 }
 
 def main():
