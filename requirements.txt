@@ -1,5 +1,11 @@
-mysql-connector-python
-pandas
-python-dotenv
-bcrypt
-streamlit-folium
+# Bus Nexus — Streamlit App Requirements
+# Phase 1: Mock data (no DB needed)
+# Phase 2: Uncomment psycopg2-binary
+
+streamlit>=1.32.0
+pandas>=2.0.0
+
+# Phase 2 — uncomment to connect to PostgreSQL:
+psycopg2-binary>=2.9.9
+sqlalchemy>=2.0.0
+python-dotenv>=1.0.0
